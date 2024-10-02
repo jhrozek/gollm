@@ -25,6 +25,7 @@ import (
 )
 
 const (
+	chatEndpoint     = "/api/chat"
 	generateEndpoint = "/api/generate"
 	embedEndpoint    = "/api/embeddings"
 	defaultTimeout   = 30 * time.Second
@@ -41,18 +42,33 @@ type OllamaBackend struct {
 // Response represents the structure of the response received from the Ollama API.
 // It contains information about the generated content, model details, and performance metrics.
 type Response struct {
-	Model              string `json:"model"`
-	CreatedAt          string `json:"created_at"`
-	Response           string `json:"response"`
-	Done               bool   `json:"done"`
-	DoneReason         string `json:"done_reason"`
-	Context            []int  `json:"context"`
-	TotalDuration      int64  `json:"total_duration"`
-	LoadDuration       int64  `json:"load_duration"`
-	PromptEvalCount    int    `json:"prompt_eval_count"`
-	PromptEvalDuration int64  `json:"prompt_eval_duration"`
-	EvalCount          int    `json:"eval_count"`
-	EvalDuration       int64  `json:"eval_duration"`
+	Model              string                `json:"model"`
+	CreatedAt          string                `json:"created_at"`
+	Message            OllamaResponseMessage `json:"message"`
+	Done               bool                  `json:"done"`
+	DoneReason         string                `json:"done_reason"`
+	Context            []int                 `json:"context"`
+	TotalDuration      int64                 `json:"total_duration"`
+	LoadDuration       int64                 `json:"load_duration"`
+	PromptEvalCount    int                   `json:"prompt_eval_count"`
+	PromptEvalDuration int64                 `json:"prompt_eval_duration"`
+	EvalCount          int                   `json:"eval_count"`
+	EvalDuration       int64                 `json:"eval_duration"`
+}
+
+type OllamaFunctionCall struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+}
+
+type OllamaToolCall struct {
+	Function OllamaFunctionCall `json:"function"`
+}
+
+type OllamaResponseMessage struct {
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []OllamaToolCall `json:"tool_calls"`
 }
 
 // OllamaEmbeddingResponse represents the structure of the response received from the Ollama API for embeddings.
@@ -70,6 +86,49 @@ func NewOllamaBackend(baseURL, model string) *OllamaBackend {
 			Timeout: defaultTimeout,
 		},
 	}
+}
+
+func (o *OllamaBackend) Chat(
+	ctx context.Context,
+	messages []map[string]any,
+	tools []map[string]any,
+) (*Response, error) {
+	url := o.BaseURL + chatEndpoint
+	reqBody := map[string]interface{}{
+		"model":    o.Model,
+		"messages": messages,
+		"tools":    tools,
+		"stream":   false,
+	}
+
+	reqBodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(reqBodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := o.Client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to generate response from Ollama: status code %d, response: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result Response
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return &result, nil
 }
 
 // Generate produces a response from the Ollama API based on the given prompt.
